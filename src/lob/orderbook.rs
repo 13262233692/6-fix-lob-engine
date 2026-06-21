@@ -2,6 +2,8 @@ use std::io::{self, Write};
 
 const SOH: u8 = 0x01;
 const PRICE_SCALE: i64 = 100_000_000;
+pub const TICK_SIZE: i64 = 1_000_000;
+pub const MAX_SPREAD_TICKS: u32 = 5;
 
 #[derive(Clone, Copy)]
 pub enum Side {
@@ -128,7 +130,7 @@ fn parse_fix_price(s: &[u8]) -> i64 {
     result
 }
 
-fn format_fix_price(price: i64, buf: &mut [u8]) -> usize {
+pub(crate) fn format_fix_price(price: i64, buf: &mut [u8]) -> usize {
     let integer_part = price / PRICE_SCALE;
     let decimal_part = (price % PRICE_SCALE).unsigned_abs();
     let mut pos = 0;
@@ -198,6 +200,38 @@ impl LimitOrderBook {
             next_exec_id: 1,
             seq: 0,
         }
+    }
+
+    #[inline(always)]
+    pub fn best_bid(&self) -> Option<i64> {
+        self.bids.max_key().map(|idx| self.bids.arena.get(idx).key)
+    }
+
+    #[inline(always)]
+    pub fn best_ask(&self) -> Option<i64> {
+        self.asks.min_key().map(|idx| self.asks.arena.get(idx).key)
+    }
+
+    pub fn top_of_book(&self) -> (Option<i64>, Option<i64>) {
+        (self.best_bid(), self.best_ask())
+    }
+
+    pub fn spread_ticks(&self) -> Option<u32> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some(bid), Some(ask)) => {
+                if ask > bid {
+                    let diff = (ask - bid).unsigned_abs();
+                    Some((diff / TICK_SIZE as u64) as u32)
+                } else {
+                    Some(0)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_spread_too_wide(&self) -> bool {
+        matches!(self.spread_ticks(), Some(s) if s > MAX_SPREAD_TICKS)
     }
 
     pub fn submit_order(

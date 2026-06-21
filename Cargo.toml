@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["net", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
+rand = "0.8"
 
 [profile.release]
 opt-level = 3
