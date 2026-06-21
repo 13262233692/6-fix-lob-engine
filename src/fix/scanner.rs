@@ -62,6 +62,9 @@ impl<'a> FixScanner<'a> {
         let tag = parse_tag(&self.data[self.pos..tag_end])?;
 
         let value_start = tag_end + 1;
+        if value_start > self.data.len() {
+            return None;
+        }
         let soh_pos = memchr(SOH, &self.data[value_start..])?;
         let value_end = value_start + soh_pos;
 
@@ -77,7 +80,8 @@ fn parse_tag(data: &[u8]) -> Option<u32> {
     let mut result: u32 = 0;
     for &b in data {
         if b >= b'0' && b <= b'9' {
-            result = result * 10 + (b - b'0') as u32;
+            result = result.checked_mul(10)?;
+            result = result.checked_add((b - b'0') as u32)?;
         } else {
             return None;
         }
@@ -90,84 +94,66 @@ fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&b| b == needle)
 }
 
-pub fn find_message_boundary(buf: &[u8]) -> Option<usize> {
-    let pattern = b"8=FIX";
-    if buf.len() < pattern.len() {
-        return None;
-    }
-    for i in 0..=buf.len() - pattern.len() {
-        if buf[i..].starts_with(pattern) {
-            if i > 0 {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-pub fn extract_complete_message(buf: &[u8]) -> Option<usize> {
-    let start_tag = b"8=FIX";
-    if !buf.starts_with(start_tag) {
-        let offset = find_message_boundary(buf)?;
-        return extract_complete_message(&buf[offset..]);
-    }
-
-    let mut soh_count = 0u32;
-    let mut body_len: Option<usize> = None;
-    let mut pos = 0;
-
-    while pos < buf.len() {
-        let next_soh = memchr(SOH, &buf[pos..])?;
-        let field_end = pos + next_soh;
-        let field_data = &buf[pos..field_end];
-
-        if let Some(eq_pos) = memchr(b'=', field_data) {
-            let tag = parse_tag(&field_data[..eq_pos]);
-            if let Some(tag_num) = tag {
-                if tag_num == 9 {
-                    let val = &field_data[eq_pos + 1..];
-                    body_len = parse_usize(val);
-                }
-            }
-        }
-
-        soh_count += 1;
-        pos = field_end + 1;
-
-        if soh_count >= 3 && body_len.is_some() {
-            let bl = body_len.unwrap();
-            let body_start = pos;
-            let msg_end = body_start + bl;
-            if msg_end + 7 <= buf.len() {
-                return Some(msg_end + 7);
-            }
-            return None;
-        }
-    }
-
-    None
-}
-
-fn parse_usize(data: &[u8]) -> Option<usize> {
-    let mut result: usize = 0;
-    for &b in data {
-        if b >= b'0' && b <= b'9' {
-            result = result * 10 + (b - b'0') as usize;
-        } else {
-            return None;
-        }
-    }
-    Some(result)
-}
-
 pub fn parse_u64(data: &[u8]) -> Option<u64> {
     let mut result: u64 = 0;
     for &b in data {
         if b >= b'0' && b <= b'9' {
-            result = result * 10 + (b - b'0') as u64;
+            result = result.checked_mul(10)?;
+            result = result.checked_add((b - b'0') as u64)?;
         } else {
             return None;
         }
     }
     Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_tag_overflow() {
+        assert_eq!(parse_tag(b"4294967295"), Some(4294967295u32));
+        assert_eq!(parse_tag(b"4294967296"), None);
+    }
+
+    #[test]
+    fn test_parse_u64_overflow() {
+        assert_eq!(parse_u64(b"18446744073709551615"), Some(18446744073709551615u64));
+        assert_eq!(parse_u64(b"18446744073709551616"), None);
+    }
+
+    #[test]
+    fn test_scanner_boundary() {
+        let data = b"35=D\x0155=AAPL\x0144=100.50\x01";
+        let mut scanner = FixScanner::new(data);
+        let f1 = scanner.next_field().unwrap();
+        assert_eq!(f1.tag, 35);
+        assert_eq!(f1.value, b"D");
+        let f2 = scanner.next_field().unwrap();
+        assert_eq!(f2.tag, 55);
+        assert_eq!(f2.value, b"AAPL");
+        let f3 = scanner.next_field().unwrap();
+        assert_eq!(f3.tag, 44);
+        assert_eq!(f3.value, b"100.50");
+        assert!(scanner.next_field().is_none());
+    }
+
+    #[test]
+    fn test_scanner_truncated_no_soh() {
+        let data = b"35=D\x0155=AAPL\x0144=100.50";
+        let mut scanner = FixScanner::new(data);
+        let f1 = scanner.next_field().unwrap();
+        assert_eq!(f1.tag, 35);
+        let f2 = scanner.next_field().unwrap();
+        assert_eq!(f2.tag, 55);
+        assert!(scanner.next_field().is_none());
+    }
+
+    #[test]
+    fn test_scanner_truncated_no_value() {
+        let data = b"35=";
+        let mut scanner = FixScanner::new(data);
+        assert!(scanner.next_field().is_none());
+    }
 }
